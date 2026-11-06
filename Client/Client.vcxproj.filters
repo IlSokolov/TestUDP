@@ -1,0 +1,63 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Исходные файлы">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Файлы заголовков">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Файлы ресурсов">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Исходные файлы\src">
+      <UniqueIdentifier>{caf87103-6ea5-48aa-9825-8a35c3755b66}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Исходные файлы\sha256">
+      <UniqueIdentifier>{71cd9769-f72f-4812-b8e4-accb65104a98}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Файлы заголовков\sha256h">
+      <UniqueIdentifier>{7bf220a5-5b56-42a3-b069-c9b82add34a3}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\hmac_sha256.c">
+      <Filter>Исходные файлы\sha256</Filter>
+    </ClCompile>
+    <ClCompile Include="..\sha256.c">
+      <Filter>Исходные файлы\sha256</Filter>
+    </ClCompile>
+    <ClCompile Include="client.cpp">
+      <Filter>Исходные файлы\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\secure_zero.c">
+      <Filter>Исходные файлы\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\settings.cpp">
+      <Filter>Исходные файлы\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\transport.cpp">
+      <Filter>Исходные файлы\src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\secure_zero.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="..\settings.hpp">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="..\transport.hpp">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
+    <ClInclude Include="..\hmac_sha256.h">
+      <Filter>Файлы заголовков\sha256h</Filter>
+    </ClInclude>
+    <ClInclude Include="..\sha256.h">
+      <Filter>Файлы заголовков\sha256h</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
