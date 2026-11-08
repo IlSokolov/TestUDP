@@ -1,0 +1,73 @@
+
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build solution
+        shell: pwsh
+        run: |
+          msbuild ".\TestUDP.slnx" `
+            /t:Rebuild `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m `
+            /verbosity:minimal 2>&1 |
+            Tee-Object -FilePath build.log
+
+          $buildExitCode = $LASTEXITCODE
+
+          if ($buildExitCode -ne 0) {
+            exit $buildExitCode
+          }
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $testExe = Get-ChildItem -Path . `
+            -Filter "ExchangeTests.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if ($null -eq $testExe) {
+            Write-Error "ExchangeTests.exe was not found"
+            exit 1
+          }
+
+          Write-Host "Running tests: $($testExe.FullName)"
+
+          & $testExe.FullName 2>&1 |
+            Tee-Object -FilePath test-results.log
+
+          $testExitCode = $LASTEXITCODE
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Upload build and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            build.log
+            test-results.log
+          if-no-files-found: warn
