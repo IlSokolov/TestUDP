@@ -4,10 +4,7 @@ namespace UdpTransport
 {
 
     bool sameEndpoint(const sockaddr_in& first, const sockaddr_in& second) {
-
-        return first.sin_family == second.sin_family &&
-            first.sin_addr.s_addr == second.sin_addr.s_addr &&
-            first.sin_port == second.sin_port;
+        return first.sin_family == second.sin_family && first.sin_addr.s_addr == second.sin_addr.s_addr && first.sin_port == second.sin_port;
     }
 
     void sendDatagram(SOCKET socket, const Packet& packet, const sockaddr_in& destination) {
