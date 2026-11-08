@@ -1,11 +1,13 @@
 #include <winsock2.h>
 #include <WS2tcpip.h>
+#include <mswsock.h>
+
 #include "../secure_zero.h"
 #include "../settings.hpp"
 #include "../transport.hpp"
 
-#include <mswsock.h>
 #include <cstdint>
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <chrono>
@@ -35,11 +37,8 @@ public:
         DWORD bytesReturned = 0;
 
         if (WSAIoctl(client_socket, SIO_UDP_CONNRESET, &enableReset, sizeof(enableReset), nullptr, 0, &bytesReturned, nullptr, nullptr) == SOCKET_ERROR) {
-
             const int error = WSAGetLastError();
-
             cleanup();
-
             throw std::runtime_error("WSAIoctl failed. WSA error: " + std::to_string(error));
         }
 
@@ -60,22 +59,18 @@ public:
     UDPClient& operator=(const UDPClient&) = delete;
 
     void generateRandom() {
-
         Util::generateRandomBytes(client_random);
-        
-        exchange_id = 0;
 
         std::array<std::uint8_t, 4> id_bytes{};
         Util::generateRandomBytes(id_bytes);
 
         exchange_id = (static_cast<std::uint32_t>(id_bytes[0]) << 24) |
-                      (static_cast<std::uint32_t>(id_bytes[1]) << 16) |
-                      (static_cast<std::uint32_t>(id_bytes[2]) << 8) |
-                       static_cast<std::uint32_t>(id_bytes[3]);
+            (static_cast<std::uint32_t>(id_bytes[1]) << 16) |
+            (static_cast<std::uint32_t>(id_bytes[2]) << 8) |
+            static_cast<std::uint32_t>(id_bytes[3]);
     }
 
     std::vector<std::uint8_t> buildInit() {
-
         std::vector<std::uint8_t> payload(client_random.begin(), client_random.end());
 
         return Util::makePacket(Util::MessageType::INIT, exchange_id, payload);
@@ -90,20 +85,23 @@ public:
 
         std::vector<std::uint8_t> payload(hmac.begin(), hmac.end());
 
-        return Util::makePacket( Util::MessageType::CONFIRM, exchange_id, payload);
+        return Util::makePacket(Util::MessageType::CONFIRM, exchange_id, payload);
     }
 
-    bool sendTo(const UdpTransport::Packet& packet) const{
+    void sendTo(const UdpTransport::Packet& packet) {
+        if (exchange_timer.expired()) {
+            resetExchange();
+            throw std::runtime_error("Exchange timed out");
+        }
+
         UdpTransport::sendDatagram(client_socket, packet, server);
-        return true;
     }
 
     void startExchangeTimeout() {
         exchange_timer.start();
     }
 
-    void resetExchange() noexcept{
-
+    void resetExchange() noexcept {
         secure_zero(client_random.data(), client_random.size());
         secure_zero(server_random.data(), server_random.size());
         secure_zero(nonce.data(), nonce.size());
@@ -114,27 +112,19 @@ public:
         exchange_timer.reset();
     }
 
-    void sendTo(const UdpTransport::Packet& packet) {
-
-        if (exchange_timer.expired()) {
-            resetExchange();
-            throw std::runtime_error("Exchange timed out");
-        }
-
-        UdpTransport::sendDatagram( client_socket, packet, server);
+    bool exchangeActive() const noexcept {
+        return exchange_timer.active();
     }
 
     bool acceptInitAck(const std::vector<std::uint8_t>& packet) {
-
         Util::ParsedPacket parsed;
 
         if (!Util::parsePacket(packet, parsed)) return false;
 
         if (parsed.type != Util::MessageType::INIT_ACK || parsed.exchange_id != exchange_id) return false;
-        
-        std::copy_n( parsed.payload.begin(), 32, server_random.begin());
 
-        std::copy_n( parsed.payload.begin() + 32, 32, nonce.begin());
+        std::copy_n(parsed.payload.begin(), 32, server_random.begin());
+        std::copy_n(parsed.payload.begin() + 32, 32, nonce.begin());
 
         deriveSecret();
 
@@ -142,20 +132,18 @@ public:
     }
 
     bool verifyConfirmAck(const std::vector<std::uint8_t>& packet) {
-
         Util::ParsedPacket parsed;
 
         if (!Util::parsePacket(packet, parsed)) return false;
 
         if (parsed.type != Util::MessageType::CONFIRM_ACK || parsed.exchange_id != exchange_id) return false;
-        
+
         const auto expected_hmac = Util::calculateHmac(Util::MessageType::CONFIRM_ACK, exchange_id, secret, client_random, server_random, nonce);
 
-        return Util::constantTimeEqual( expected_hmac.data(), parsed.payload.data(), expected_hmac.size());
+        return Util::constantTimeEqual(expected_hmac.data(), parsed.payload.data(), expected_hmac.size());
     }
 
-    UdpTransport::ReceiveStatus receiveFrom(UdpTransport::Packet& packet) {
-
+    UdpTransport::ReceiveStatus receiveFrom(UdpTransport::Packet& packet, const timeval* max_wait = nullptr) {
         auto timeout = exchange_timer.remaining();
 
         if (timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0) {
@@ -163,20 +151,25 @@ public:
             return UdpTransport::ReceiveStatus::Timeout;
         }
 
+        if (max_wait != nullptr) {
+            if (!timeout ||
+                max_wait->tv_sec < timeout->tv_sec ||
+                (max_wait->tv_sec == timeout->tv_sec && max_wait->tv_usec < timeout->tv_usec)) {
+                timeout = *max_wait;
+            }
+        }
+
         sockaddr_in sender{};
 
-        auto status = UdpTransport::receiveDatagram( client_socket, packet, sender, timeout ? &*timeout : nullptr);
+        auto status = UdpTransport::receiveDatagram(client_socket, packet, sender, timeout ? &*timeout : nullptr);
 
         if (exchange_timer.expired()) {
-
             UdpTransport::clearPacket(packet);
             resetExchange();
-
             return UdpTransport::ReceiveStatus::Timeout;
         }
 
         if (status == UdpTransport::ReceiveStatus::Timeout) {
-            if (exchange_timer.active()) resetExchange();
             return status;
         }
 
@@ -190,23 +183,13 @@ public:
         return status;
     }
 
-    const std::array<std::uint8_t, 32>& getClientRandom() const{
-        return client_random;
-    }
-
-    const std::array<std::uint8_t, 32>& getServerRandom() const{
-        return server_random;
-    }
-
-    const std::array<std::uint8_t, 32>& getNonce() const{
-        return nonce;
-    }
-
-    std::uint32_t getExchangeId() const{
+    std::uint32_t getExchangeId() const {
         return exchange_id;
     }
 
     void cleanup() {
+        resetExchange();
+
         if (client_socket != INVALID_SOCKET) {
             closesocket(client_socket);
             client_socket = INVALID_SOCKET;
@@ -219,7 +202,6 @@ public:
     }
 
 private:
-
     std::uint32_t exchange_id{};
 
     std::array<std::uint8_t, 32> client_random{};
@@ -237,8 +219,9 @@ private:
 };
 
 int main() {
-
     try {
+        constexpr int MAX_RETRANSMISSIONS = 4;
+        constexpr auto RETRY_INTERVAL = std::chrono::seconds(1);
 
         UDPClient client("127.0.0.1", 8080);
 
@@ -249,78 +232,120 @@ int main() {
         client.startExchangeTimeout();
 
         client.sendTo(init_packet);
-        UdpTransport::clearPacket(init_packet);
 
         std::cout << "INIT sent, exchange = " << client.getExchangeId() << '\n';
 
-        UdpTransport::Packet response;
+        auto waitForResponse = [&](const UdpTransport::Packet& outgoing, auto validate,
+            const char* retry_name, const char* invalid_message) -> bool {
+                int retries = 0;
+                auto next_retry = std::chrono::steady_clock::now() + RETRY_INTERVAL;
 
-        while (true) {
+                UdpTransport::Packet response;
 
-            auto status = client.receiveFrom(response);
+                while (true) {
+                    std::optional<timeval> wait_timeout;
 
-            if (status == UdpTransport::ReceiveStatus::Timeout) {
-                std::cerr << "Exchange timeout\n";
-                return 1;
-            }
+                    if (retries < MAX_RETRANSMISSIONS) {
+                        auto remaining = next_retry - std::chrono::steady_clock::now();
 
-            if (status != UdpTransport::ReceiveStatus::Received) {
-                std::cerr << "Invalid datagram\n";
-                continue;
-            }
+                        if (remaining < std::chrono::steady_clock::duration::zero()) {
+                            remaining = std::chrono::steady_clock::duration::zero();
+                        }
 
-            if (!client.acceptInitAck(response)) {
-                std::cerr << "Invalid INIT_ACK\n";
-                UdpTransport::clearPacket(response);
-                continue;
-            }
+                        const auto microseconds = std::chrono::ceil<std::chrono::microseconds>(remaining).count();
 
-            UdpTransport::clearPacket(response);
-            break;
+                        timeval timeout{};
+                        timeout.tv_sec = static_cast<long>(microseconds / 1'000'000);
+                        timeout.tv_usec = static_cast<long>(microseconds % 1'000'000);
+
+                        wait_timeout = timeout;
+                    }
+
+                    auto status = client.receiveFrom(response, wait_timeout ? &*wait_timeout : nullptr);
+
+                    if (status == UdpTransport::ReceiveStatus::Timeout) {
+                        if (!client.exchangeActive()) {
+                            std::cerr << "Exchange timeout\n";
+                            UdpTransport::clearPacket(response);
+                            return false;
+                        }
+
+                        if (retries < MAX_RETRANSMISSIONS &&
+                            std::chrono::steady_clock::now() >= next_retry) {
+                            client.sendTo(outgoing);
+
+                            ++retries;
+
+                            std::cout << retry_name << " retransmitted ("
+                                << retries << "/" << MAX_RETRANSMISSIONS << ")\n";
+
+                            next_retry = std::chrono::steady_clock::now() + RETRY_INTERVAL;
+                        }
+
+                        continue;
+                    }
+
+                    if (status != UdpTransport::ReceiveStatus::Received) {
+                        std::cerr << "Invalid datagram\n";
+                        UdpTransport::clearPacket(response);
+                        continue;
+                    }
+
+                    if (!validate(response)) {
+                        std::cerr << invalid_message << '\n';
+                        UdpTransport::clearPacket(response);
+                        continue;
+                    }
+
+                    UdpTransport::clearPacket(response);
+                    return true;
+                }
+            };
+
+        if (!waitForResponse(init_packet,
+            [&](const UdpTransport::Packet& packet) {
+                return client.acceptInitAck(packet);
+            },
+            "INIT", "Invalid INIT_ACK")) {
+
+            UdpTransport::clearPacket(init_packet);
+
+            return 1;
         }
+
+        UdpTransport::clearPacket(init_packet);
 
         std::cout << "INIT_ACK received\n";
 
         auto confirm_packet = client.buildConfirm();
 
         client.sendTo(confirm_packet);
-        UdpTransport::clearPacket(confirm_packet);
 
         std::cout << "CONFIRM sent\n";
 
-        while (true) {
-
-            auto status = client.receiveFrom(response);
-
-            if (status == UdpTransport::ReceiveStatus::Timeout) {
-                std::cerr << "Exchange timeout\n";
-                return 1;
-            }
-
-            if (status != UdpTransport::ReceiveStatus::Received) {
-                std::cerr << "Invalid datagram\n";
-                continue;
-            }
-
-            if (!client.verifyConfirmAck(response)) {
-                std::cerr << "Invalid CONFIRM_ACK\n";
-                UdpTransport::clearPacket(response);
-                continue;
-            }
-
-            UdpTransport::clearPacket(response);
-
-            const auto exchange_id = client.getExchangeId();
-
-            std::cout << "ok exchange=" << exchange_id << ";\n";
-
-            client.resetExchange();
-
-            return 0;
+        if (!waitForResponse(
+            confirm_packet,
+            [&](const UdpTransport::Packet& packet) {
+                return client.verifyConfirmAck(packet);
+            },
+            "CONFIRM",
+            "Invalid CONFIRM_ACK")) {
+            UdpTransport::clearPacket(confirm_packet);
+            return 1;
         }
+
+        UdpTransport::clearPacket(confirm_packet);
+
+        const auto exchange_id = client.getExchangeId();
+
+        std::cout << "ok exchange=" << exchange_id << ";\n";
+
+        client.resetExchange();
+
+        return 0;
     }
     catch (const std::exception& exception) {
-        std::cerr << "Client error: "<< exception.what() << '\n';
+        std::cerr << "Client error: " << exception.what() << '\n';
         return 1;
     }
 }

@@ -10,7 +10,6 @@
 #include <vector>
 #include <chrono>
 #include <iostream>
-#include <optional>
 #include <stdexcept>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -19,7 +18,6 @@ class UDPServer
 {
 public:
     explicit UDPServer(std::uint16_t port) {
-
         int result = WSAStartup(MAKEWORD(2, 2), &wsdt);
 
         if (result != 0) throw std::runtime_error("WSAStartup failed");
@@ -70,14 +68,17 @@ public:
 
     std::vector<std::uint8_t> buildConfirmAck() {
         auto hmac = Util::calculateHmac(Util::MessageType::CONFIRM_ACK, exchange_id, secret, client_random, server_random, nonce);
-        return Util::makePacket(Util::MessageType::CONFIRM_ACK, exchange_id, { hmac.begin(), hmac.end() });
+
+        std::vector<std::uint8_t> payload(hmac.begin(), hmac.end());
+
+        return Util::makePacket(Util::MessageType::CONFIRM_ACK, exchange_id, payload);
     }
 
     void startExchangeTimeout() {
         exchange_timer.start();
     }
 
-    void resetExchange() noexcept{
+    void resetExchange() noexcept {
         secure_zero(client_random.data(), client_random.size());
         secure_zero(server_random.data(), server_random.size());
         secure_zero(nonce.data(), nonce.size());
@@ -92,20 +93,69 @@ public:
     }
 
     void setClient(const sockaddr_in& sender) {
-
-        if (sender.sin_family != AF_INET) throw std::invalid_argument("Invalid client address");
+        if (sender.sin_family != AF_INET) {
+            throw std::invalid_argument("Invalid client address");
+        }
 
         client = sender;
         client_known = true;
     }
 
-    bool isSameClient(const sockaddr_in& sender) const{
+    bool isSameClient(const sockaddr_in& sender) const {
         return client_known && UdpTransport::sameEndpoint(client, sender);
     }
 
-    void sendTo(const UdpTransport::Packet& packet) {
+    bool isDuplicateInit(const UdpTransport::Packet& packet, const sockaddr_in& sender) const {
+        if (!exchange_timer.active() || !isSameClient(sender)) return false;
 
-        if (!client_known) throw std::runtime_error("Client address is not set");
+        Util::ParsedPacket parsed;
+
+        if (!Util::parsePacket(packet, parsed)) return false;
+
+        if (parsed.type != Util::MessageType::INIT || parsed.exchange_id != exchange_id) return false;
+
+        if (parsed.payload.size() != client_random.size()) return false;
+
+        return Util::constantTimeEqual(parsed.payload.data(), client_random.data(), client_random.size());
+    }
+
+    void rememberCompletedExchange(const UdpTransport::Packet& confirm_packet,
+        const UdpTransport::Packet& confirm_ack_packet) {
+        clearCompletedExchange();
+
+        completed_confirm_packet = confirm_packet;
+        completed_confirm_ack_packet = confirm_ack_packet;
+        completed_client = client;
+
+        completed_cache_expiration = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        completed_exchange_valid = true;
+    }
+
+    bool resendCompletedConfirmAck(const UdpTransport::Packet& packet, const sockaddr_in& sender) {
+        if (!completed_exchange_valid) return false;
+
+        if (std::chrono::steady_clock::now() >= completed_cache_expiration) {
+            clearCompletedExchange();
+            return false;
+        }
+
+        if (!UdpTransport::sameEndpoint(sender, completed_client)) return false;
+
+        if (packet.size() != completed_confirm_packet.size()) return false;
+
+        if (!Util::constantTimeEqual(packet.data(), completed_confirm_packet.data(), packet.size())) {
+            return false;
+        }
+
+        UdpTransport::sendDatagram(server_socket, completed_confirm_ack_packet, completed_client);
+
+        return true;
+    }
+
+    void sendTo(const UdpTransport::Packet& packet) {
+        if (!client_known) {
+            throw std::runtime_error("Client address is not set");
+        }
 
         if (exchange_timer.expired()) {
             resetExchange();
@@ -116,7 +166,6 @@ public:
     }
 
     bool acceptInit(const std::vector<std::uint8_t>& packet, const sockaddr_in& sender) {
-
         Util::ParsedPacket parsed;
 
         if (!Util::parsePacket(packet, parsed)) return false;
@@ -154,7 +203,6 @@ public:
     }
 
     UdpTransport::ReceiveStatus receiveFrom(UdpTransport::Packet& packet, sockaddr_in& sender) {
-
         auto timeout = exchange_timer.remaining();
 
         if (timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0) {
@@ -165,10 +213,8 @@ public:
         auto status = UdpTransport::receiveDatagram(server_socket, packet, sender, timeout ? &*timeout : nullptr);
 
         if (exchange_timer.expired()) {
-
             UdpTransport::clearPacket(packet);
             resetExchange();
-
             return UdpTransport::ReceiveStatus::Timeout;
         }
 
@@ -180,23 +226,14 @@ public:
         return status;
     }
 
-    const std::array<std::uint8_t, 32>& getClientRandom() const{
-        return client_random;
-    }
-
-    const std::array<std::uint8_t, 32>& getServerRandom() const{
-        return server_random;
-    }
-
-    const std::array<std::uint8_t, 32>& getNonce() const{
-        return nonce;
-    }
-
-    std::uint32_t getExchangeId() const{
+    std::uint32_t getExchangeId() const {
         return exchange_id;
     }
 
     void cleanup() {
+        resetExchange();
+        clearCompletedExchange();
+
         if (server_socket != INVALID_SOCKET) {
             closesocket(server_socket);
             server_socket = INVALID_SOCKET;
@@ -209,6 +246,14 @@ public:
     }
 
 private:
+    void clearCompletedExchange() noexcept {
+        UdpTransport::clearPacket(completed_confirm_packet);
+        UdpTransport::clearPacket(completed_confirm_ack_packet);
+
+        completed_client = {};
+        completed_cache_expiration = {};
+        completed_exchange_valid = false;
+    }
 
     std::uint32_t exchange_id{};
 
@@ -218,6 +263,14 @@ private:
     std::array<std::uint8_t, 32> server_random{};
     std::array<std::uint8_t, 32> nonce{};
     std::array<std::uint8_t, 32> secret{};
+
+    UdpTransport::Packet completed_confirm_packet;
+    UdpTransport::Packet completed_confirm_ack_packet;
+
+    sockaddr_in completed_client{};
+    std::chrono::steady_clock::time_point completed_cache_expiration{};
+
+    bool completed_exchange_valid = false;
 
     WSADATA wsdt{};
     SOCKET server_socket = INVALID_SOCKET;
@@ -230,29 +283,30 @@ private:
 };
 
 int main() {
-
     try {
-
         UDPServer server(8080);
 
         std::cout << "Server started on port 8080\n";
 
         while (true) {
-
             UdpTransport::Packet request;
             sockaddr_in sender{};
 
             auto status = server.receiveFrom(request, sender);
 
             if (status != UdpTransport::ReceiveStatus::Received) {
-
                 std::cerr << "Invalid datagram\n";
                 UdpTransport::clearPacket(request);
                 continue;
             }
 
-            if (!server.acceptInit(request, sender)) {
+            if (server.resendCompletedConfirmAck(request, sender)) {
+                std::cout << "Duplicate CONFIRM received, CONFIRM_ACK resent\n";
+                UdpTransport::clearPacket(request);
+                continue;
+            }
 
+            if (!server.acceptInit(request, sender)) {
                 std::cerr << "Invalid INIT or exchange_id already used\n";
                 UdpTransport::clearPacket(request);
                 continue;
@@ -265,7 +319,6 @@ int main() {
             auto init_ack = server.buildInitAck();
 
             server.sendTo(init_ack);
-            UdpTransport::clearPacket(init_ack);
 
             std::cout << "INIT_ACK sent\n";
 
@@ -283,34 +336,51 @@ int main() {
                 }
 
                 if (status != UdpTransport::ReceiveStatus::Received) {
-
                     std::cerr << "Invalid datagram\n";
                     UdpTransport::clearPacket(request);
                     continue;
                 }
 
-                if (!server.isSameClient(sender_address)) {
+                if (server.resendCompletedConfirmAck(request, sender_address)) {
+                    std::cout << "Duplicate CONFIRM received, CONFIRM_ACK resent\n";
+                    UdpTransport::clearPacket(request);
+                    continue;
+                }
 
+                if (server.isDuplicateInit(request, sender_address)) {
+
+                    server.sendTo(init_ack);
+
+                    std::cout << "Duplicate INIT received, INIT_ACK resent\n";
+
+                    UdpTransport::clearPacket(request);
+                    continue;
+                }
+
+                if (!server.isSameClient(sender_address)) {
                     std::cerr << "Unexpected client address\n";
                     UdpTransport::clearPacket(request);
                     continue;
                 }
 
                 if (!server.verifyConfirm(request)) {
-
-                    std::cerr << "Invalid CONFIRM\n";
+                    std::cerr << "Invalid CONFIRM or HMAC mismatch\n";
                     UdpTransport::clearPacket(request);
                     continue;
                 }
-
-                UdpTransport::clearPacket(request);
 
                 auto confirm_ack = server.buildConfirmAck();
 
                 const auto exchange_id = server.getExchangeId();
 
+                server.rememberCompletedExchange(request, confirm_ack);
+
+                UdpTransport::clearPacket(request);
+
                 server.sendTo(confirm_ack);
+
                 UdpTransport::clearPacket(confirm_ack);
+                UdpTransport::clearPacket(init_ack);
 
                 std::cout << "ok exchange=" << exchange_id << ";\n";
 
@@ -319,7 +389,11 @@ int main() {
                 completed = true;
             }
 
-            if (!completed) server.resetExchange();
+            UdpTransport::clearPacket(init_ack);
+
+            if (!completed) {
+                server.resetExchange();
+            }
         }
     }
     catch (const std::exception& exception) {
