@@ -1,3 +1,7 @@
+//Серверная часть приложения
+    
+//Импорты
+
 #include <winsock2.h>
 #include "../secure_zero.h"
 #include "../settings.hpp"
@@ -12,12 +16,24 @@
 #include <iostream>
 #include <stdexcept>
 
+//Подключение зависимости Ws2_32.lib для winsock2
 #pragma comment(lib, "Ws2_32.lib")
 
+//Класс, предоставляющий интерфейс для серверного взаимодействия
 class UDPServer
 {
 public:
+
+    /*
+        Явный конструктор, не допускает неявного преобразования типов
+        инициализирует использование библиотеки Windows Sockets
+        создает дескриптор сокета и устанавливает параметры соединения
+
+        Принимаемые аргументы:
+            std::uint16_t port - порт, по которому будет доступен сервер
+    */
     explicit UDPServer(std::uint16_t port) {
+
         int result = WSAStartup(MAKEWORD(2, 2), &wsdt);
 
         if (result != 0) throw std::runtime_error("WSAStartup failed");
@@ -41,19 +57,36 @@ public:
         }
     }
 
+    /*
+        Деструктор
+        Вызывает метод, котрый корректно завершает цикл обмена
+    */
     ~UDPServer() {
         cleanup();
     }
 
+    /*
+        Оператор присваивания и конструктор копирования удалены 
+    */
     UDPServer(const UDPServer&) = delete;
     UDPServer& operator=(const UDPServer&) = delete;
 
+    /*
+        Метод, который генерирует рандомные значения для server_random и nonce
+    */
     void generateRandom() {
         Util::generateRandomBytes(server_random);
         Util::generateRandomBytes(nonce);
     }
 
-    std::vector<std::uint8_t> buildInitAck() {
+    /*
+        Метод, который формирует сообщение INIT_ACK
+
+        Возвращаемое значение:
+            using UdpTransport::Packet - алиас для нераспаршенного пакета сообщения
+    */
+    UdpTransport::Packet buildInitAck() {
+
         std::vector<std::uint8_t> payload;
 
         payload.insert(payload.end(), server_random.begin(), server_random.end());
@@ -62,23 +95,40 @@ public:
         return Util::makePacket(Util::MessageType::INIT_ACK, exchange_id, payload);
     }
 
+    /*
+        Метод, который формирует секрет из 32 байтов хэша 
+    */
     void deriveSecret() {
         secret = Util::calculateSecret(exchange_id, client_random, server_random, nonce);
     }
 
-    std::vector<std::uint8_t> buildConfirmAck() {
+    /*
+        Метод, который вычисляет hmac и формирует сообщение CONFIRM_ACK
+
+        Возвращаемое значение:
+            using UdpTransport::Packet - алиас для нераспаршенного пакета сообщения
+    */
+    UdpTransport::Packet buildConfirmAck() {
+
         auto hmac = Util::calculateHmac(Util::MessageType::CONFIRM_ACK, exchange_id, secret, client_random, server_random, nonce);
 
-        std::vector<std::uint8_t> payload(hmac.begin(), hmac.end());
+        UdpTransport::Packet payload(hmac.begin(), hmac.end());
 
         return Util::makePacket(Util::MessageType::CONFIRM_ACK, exchange_id, payload);
     }
 
+    /*
+        Метод, который запускает таймер жизни цикла обмена
+    */
     void startExchangeTimeout() {
         exchange_timer.start();
     }
 
+    /*
+        Метод, который очищает секреты после окончания времени жизни цикла обмена
+    */
     void resetExchange() noexcept {
+
         secure_zero(client_random.data(), client_random.size());
         secure_zero(server_random.data(), server_random.size());
         secure_zero(nonce.data(), nonce.size());
@@ -92,7 +142,14 @@ public:
         exchange_timer.reset();
     }
 
+    /*
+        Метод, который устанавливает клиента-отправителя
+
+        Принимаемые аргументы:
+            sockaddr_in& sender - адрес транспорта и порт клиента
+    */
     void setClient(const sockaddr_in& sender) {
+
         if (sender.sin_family != AF_INET) {
             throw std::invalid_argument("Invalid client address");
         }
@@ -101,11 +158,28 @@ public:
         client_known = true;
     }
 
+    /*
+        Метод, который проверяет что пакет пришел от того же клиента, с которым сервер начал текущий обмен.
+
+        Принимаемые аргументы:
+            sockaddr_in& sender - адрес транспорта и порт клиента
+    */
     bool isSameClient(const sockaddr_in& sender) const {
         return client_known && UdpTransport::sameEndpoint(client, sender);
     }
 
+    /*
+        Метод, который проверяет что пришел идентичный INIT
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет INIT полученный от клиента
+            const sockaddr_in& sender - адрес транспорта и порт клиента
+
+        Возвращаемое значение:
+            bool - false, если INIT различный, true, если идентичный
+    */
     bool isDuplicateInit(const UdpTransport::Packet& packet, const sockaddr_in& sender) const {
+
         if (!exchange_timer.active() || !isSameClient(sender)) return false;
 
         Util::ParsedPacket parsed;
@@ -119,8 +193,15 @@ public:
         return Util::constantTimeEqual(parsed.payload.data(), client_random.data(), client_random.size());
     }
 
-    void rememberCompletedExchange(const UdpTransport::Packet& confirm_packet,
-        const UdpTransport::Packet& confirm_ack_packet) {
+    /*
+        Метод, который сохраняет информацию об успешно завершённом обмене
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& confirm_packet - пакет CONFIRM полученный от клиента
+            const UdpTransport::Packet& confirm_ack_packet - пакет CONFIRM_ACK сформированный сервером
+    */
+    void rememberCompletedExchange(const UdpTransport::Packet& confirm_packet, const UdpTransport::Packet& confirm_ack_packet) {
+
         clearCompletedExchange();
 
         completed_confirm_packet = confirm_packet;
@@ -131,7 +212,15 @@ public:
         completed_exchange_valid = true;
     }
 
+    /*
+        Метод, который повторно отправляет CONFIRM_ACK, если первоначальный ответ не дошел до клиента
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет CONFIRM_ACK сформированный сервером
+            const sockaddr_in& sender - адрес транспорта и порт клиента
+    */
     bool resendCompletedConfirmAck(const UdpTransport::Packet& packet, const sockaddr_in& sender) {
+
         if (!completed_exchange_valid) return false;
 
         if (std::chrono::steady_clock::now() >= completed_cache_expiration) {
@@ -152,6 +241,12 @@ public:
         return true;
     }
 
+    /*
+        Метод, который отправляет пакет клиенту
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет, который необходимо отправить
+    */
     void sendTo(const UdpTransport::Packet& packet) {
         if (!client_known) {
             throw std::runtime_error("Client address is not set");
@@ -165,7 +260,18 @@ public:
         UdpTransport::sendDatagram(server_socket, packet, client);
     }
 
-    bool acceptInit(const std::vector<std::uint8_t>& packet, const sockaddr_in& sender) {
+    /*
+        Метод, который проверяет INIT от клиента и начинает цикл обмена
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет INIT полученный от клиента
+            const sockaddr_in& sender - адрес транспорта и порт клиента
+
+        Возвращаемое значение:
+            bool - false, если пакет неверной структуры, true, если пакет правильно сформирован
+    */
+    bool acceptInit(const UdpTransport::Packet& packet, const sockaddr_in& sender) {
+
         Util::ParsedPacket parsed;
 
         if (!Util::parsePacket(packet, parsed)) return false;
@@ -190,7 +296,17 @@ public:
         return true;
     }
 
-    bool verifyConfirm(const std::vector<std::uint8_t>& packet) {
+    /*
+        Метод, который проверяет CONFIRM от клиента
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет CONFIRM полученный от клиента
+
+        Возвращаемое значение:
+            bool - false, если пакет неверной структуры, true, если пакет правильно сформирован
+    */
+    bool verifyConfirm(const UdpTransport::Packet& packet) {
+
         Util::ParsedPacket parsed;
 
         if (!Util::parsePacket(packet, parsed)) return false;
@@ -202,7 +318,18 @@ public:
         return Util::constantTimeEqual(expected_hmac.data(), parsed.payload.data(), expected_hmac.size());
     }
 
+    /*
+        Метод, который получает пакет от клиента 
+
+        Принимаемые аргументы:
+            const UdpTransport::Packet& packet - пакет полученный от клиента
+            const sockaddr_in& sender - адрес транспорта и порт клиента
+
+        Возвращаемое значение:
+            enum class UdpTransport::ReceiveStatus - перечисление состояний соединения
+    */
     UdpTransport::ReceiveStatus receiveFrom(UdpTransport::Packet& packet, sockaddr_in& sender) {
+
         auto timeout = exchange_timer.remaining();
 
         if (timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0) {
@@ -225,12 +352,35 @@ public:
 
         return status;
     }
+    
+    /*
+        Метод, который возвращает exchange_id 
 
+        Возвращаемое значение:
+            std::uint32_t exchange_id - id обмена
+    */
     std::uint32_t getExchangeId() const {
         return exchange_id;
     }
 
+    /*
+        Метод, который очищает информацию об успешно завершённом обмене
+    */
+    void clearCompletedExchange() noexcept {
+        UdpTransport::clearPacket(completed_confirm_packet);
+        UdpTransport::clearPacket(completed_confirm_ack_packet);
+
+        completed_client = {};
+        completed_cache_expiration = {};
+        completed_exchange_valid = false;
+    }
+
+    /*
+        Метод, который очищает секреты, информацию об успешно завершённом обмене,
+        закрывает сокет и прекращает использование библиотеки DLL Winsock 2
+    */
     void cleanup() {
+
         resetExchange();
         clearCompletedExchange();
 
@@ -243,16 +393,6 @@ public:
             WSACleanup();
             winsock_initialized = false;
         }
-    }
-
-private:
-    void clearCompletedExchange() noexcept {
-        UdpTransport::clearPacket(completed_confirm_packet);
-        UdpTransport::clearPacket(completed_confirm_ack_packet);
-
-        completed_client = {};
-        completed_cache_expiration = {};
-        completed_exchange_valid = false;
     }
 
     std::uint32_t exchange_id{};
@@ -282,13 +422,20 @@ private:
     UdpTransport::ExchangeTimer exchange_timer;
 };
 
+/*
+    Точка входа в программу
+    описывает логику серверного цикла обмена
+*/
 int main() {
+
     try {
+        
         UDPServer server(8080);
 
         std::cout << "Server started on port 8080\n";
 
         while (true) {
+
             UdpTransport::Packet request;
             sockaddr_in sender{};
 
