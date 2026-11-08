@@ -77,6 +77,8 @@ namespace
 
     //Корректный разбор INIT
     void testParseValidInit() {
+
+        expect(false, "Intentional test failure");
         
         const auto packet = makePacket(static_cast<std::uint8_t>(Util::MessageType::INIT), TEST_EXCHANGE_ID, 32);
 
