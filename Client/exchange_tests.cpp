@@ -78,7 +78,7 @@ namespace
     //Корректный разбор INIT
     void testParseValidInit() {
         
-        const auto packet = makePacket(static_cast<std::uint8_t>(Util::MessageType::INIT), TEST_EXCHANGE_ID, 32);
+        const auto packet = makePacket(static_cast<std::uint8_t>(Util::MessageType::INIT), TEST_EXCHANGE_ID, 32); 
 
         Util::ParsedPacket result{};
 
