@@ -139,12 +139,12 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\Client\exchange_tests.cpp" />
     <ClCompile Include="..\hmac_sha256.c" />
     <ClCompile Include="..\secure_zero.c" />
     <ClCompile Include="..\settings.cpp" />
     <ClCompile Include="..\sha256.c" />
     <ClCompile Include="..\transport.cpp" />
+    <ClCompile Include="exchange_tests.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\hmac_sha256.h" />

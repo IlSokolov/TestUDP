@@ -27,9 +27,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\Client\exchange_tests.cpp">
-      <Filter>Исходные файлы\tests</Filter>
-    </ClCompile>
     <ClCompile Include="..\hmac_sha256.c">
       <Filter>Исходные файлы\sha256</Filter>
     </ClCompile>
@@ -44,6 +41,9 @@
     </ClCompile>
     <ClCompile Include="..\transport.cpp">
       <Filter>Исходные файлы\src</Filter>
+    </ClCompile>
+    <ClCompile Include="exchange_tests.cpp">
+      <Filter>Исходные файлы\tests</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
